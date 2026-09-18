@@ -1,0 +1,301 @@
+/* PEC site — e3nn.org-style documentation theme.
+   Mirrors the Jekyll "tactile" look of e3nn.org: white page, fixed 270px
+   left sidebar with title + inline nav, Noto Sans 14px, #727272 body text,
+   #222 headings, teal #008080 links, hairline #eee tables. */
+
+:root {
+  --ink: #222222;
+  --body: #727272;
+  --faint: #969696;
+  --paper: #ffffff;
+  --rule: #e8e8e8;
+  --rule-soft: #f0f0f0;
+  --link: #008080;
+  --link-hover: #069;
+  --code-bg: #f5f5f5;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  --sans: "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  /* legacy aliases used by inline styles */
+  --muted: var(--body);
+  --ink-soft: #444;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  padding: 50px;
+  background: var(--paper);
+  color: var(--body);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+/* ---------- layout: fixed sidebar + content column (e3nn) ---------- */
+
+.wrapper {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.layout {
+  display: flex;
+  gap: 40px;
+  align-items: flex-start;
+}
+
+.sidebar {
+  width: 250px;
+  flex: 0 0 250px;
+  position: sticky;
+  top: 40px;
+  font-size: 14px;
+}
+
+.sidebar h1 {
+  font-size: 26px;
+  margin: 0 0 4px;
+  letter-spacing: -0.5px;
+}
+
+.sidebar h1 a { color: var(--ink); text-decoration: none; }
+.sidebar h1 a:hover { color: var(--ink); text-decoration: underline; }
+
+.sidebar .tagline {
+  margin: 0 0 18px;
+  color: var(--body);
+  font-size: 13.5px;
+}
+
+.sidebar .view {
+  margin: 0 0 18px;
+}
+.sidebar .view a { font-weight: bold; }
+
+.nav { line-height: 1.9; }
+.nav strong a { font-weight: bold; }
+.nav .sub { padding-left: 20px; }
+
+.content {
+  min-width: 0;
+  flex: 1;
+}
+
+@media (max-width: 880px) {
+  body { padding: 24px; }
+  .layout { flex-direction: column; }
+  .sidebar { position: static; width: auto; flex: none; }
+}
+
+/* ---------- typography ---------- */
+
+h1, h2, h3, h4 { color: var(--ink); margin: 0 0 20px; line-height: 1.2; font-weight: 700; }
+h2 { font-size: 21px; margin-top: 0; }
+h3 { font-size: 17px; }
+h4 { font-size: 15px; }
+
+p { margin: 0 0 14px; }
+b, strong { color: var(--ink); font-weight: 700; }
+
+a { color: var(--link); text-decoration: none; }
+a:hover, a:focus { color: var(--link-hover); font-weight: bold; }
+
+code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+pre {
+  background: var(--code-bg);
+  padding: 12px 14px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+pre code { padding: 0; background: none; }
+
+hr { border: 0; border-top: 1px solid var(--rule); margin: 34px 0; }
+
+section { margin: 0 0 44px; }
+
+.kicker {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+
+.lead { color: var(--ink); }
+
+.note {
+  font-size: 13px;
+  border-left: 3px solid var(--rule);
+  padding: 2px 0 2px 14px;
+  color: var(--body);
+}
+
+/* ---------- tables: e3nn/tactile hairline style ---------- */
+
+.tablewrap { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+
+th {
+  text-align: left;
+  color: var(--ink);
+  border-bottom: 2px solid var(--rule);
+  padding: 6px 10px 6px 0;
+  font-weight: 700;
+}
+
+td {
+  border-bottom: 1px solid var(--rule);
+  padding: 8px 10px 8px 0;
+  vertical-align: top;
+}
+
+tr:last-child td { border-bottom: none; }
+
+/* ---------- pills (kept minimal, tactile-friendly) ---------- */
+
+.pill {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 1px 9px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.pill.demo { background: #e6f2f0; color: #007060; }
+.pill.todo { background: #f3f3f3; color: #777; }
+.pill.bad  { background: #fdeeee; color: #a33; }
+
+/* ---------- hero (doc-style intro block, no big banner) ---------- */
+
+.hero { border-bottom: 1px solid var(--rule); padding-bottom: 26px; margin-bottom: 34px; }
+.hero h1 {
+  font-size: 30px;
+  letter-spacing: -0.5px;
+  margin-bottom: 10px;
+}
+.hero .sub { color: var(--ink); font-size: 15.5px; }
+.hero .abstract { font-size: 13.5px; }
+
+.badge-row { margin: 0 0 14px; }
+.badge {
+  display: inline-block;
+  font-size: 11.5px;
+  color: var(--faint);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1px 8px;
+  margin: 0 6px 6px 0;
+}
+
+/* ---------- demos ---------- */
+
+.demo-shell {
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  margin: 0 0 22px;
+  background: #fff;
+}
+
+.demo-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+}
+.demo-head .title { color: var(--ink); font-weight: 700; }
+.demo-head .status { color: var(--faint); font-family: var(--mono); font-size: 11.5px; }
+
+.demo-body { padding: 14px; }
+
+.demo-layout { display: flex; gap: 16px; flex-wrap: wrap; }
+.demo-layout .col { flex: 1 1 220px; min-width: 210px; }
+.demo-layout .col-wide { flex: 2 1 380px; min-width: 280px; }
+
+.demo-body canvas {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  display: block;
+}
+
+.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.controls label { font-size: 12.5px; color: var(--body); }
+.controls .val { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+
+.btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--link);
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+.btn:hover { background: var(--link-hover); }
+.btn.ghost {
+  color: var(--link);
+  background: #fff;
+  border: 1px solid var(--rule);
+}
+.btn.ghost:hover { border-color: var(--link); background: #f4faf9; }
+
+input[type="range"] { accent-color: var(--link); }
+
+.readout {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  color: var(--ink);
+  min-height: 18px;
+}
+
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; margin-top: 8px; }
+.legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+
+/* ---------- figures from the runs ---------- */
+
+figure { margin: 0 0 18px; }
+figure img { max-width: 100%; border: 1px solid var(--rule); border-radius: 4px; }
+figcaption { font-size: 12.5px; color: var(--faint); margin-top: 4px; }
+
+table td img { max-width: 420px; width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 4px; }
+
+/* ---------- footer ---------- */
+
+footer {
+  border-top: 1px solid var(--rule);
+  margin-top: 40px;
+  padding-top: 18px;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+footer b { color: var(--body); }

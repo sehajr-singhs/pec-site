@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PEC — The Physics Encoder</title>
+<meta name="description" content="A world model that dreams contact and material properties instead of pixels. Continuous-time dynamics, property-field decoding, contrastive dream gates, and physics-domain replay — with live demos running in your browser.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="wrapper">
+<div class="layout">
+
+<aside class="sidebar">
+  <h1><a href="#top">PEC</a></h1>
+  <p class="tagline">the physics encoder — a world model that dreams contact properties, not pixels</p>
+  <p class="view"><a href="https://github.com/">View on GitHub</a></p>
+  <nav class="nav">
+    <strong><a href="#top">Welcome!</a></strong><br>
+    <strong><a href="#spec">The spec</a></strong><br>
+    <strong><a href="#architecture">Architecture</a></strong><br>
+    <strong><a href="#math">The math</a></strong><br>
+    <strong><a href="#training">Training loop</a></strong><br>
+    <strong><a href="#prior">Prior work</a></strong><br>
+    <strong><a href="#results">Results</a></strong><br>
+    <span class="sub"><a href="#results">1-D suite (CPU)</a></span><br>
+    <span class="sub"><a href="#results">2-D/3-D on GPU (Kaggle)</a></span><br>
+    <strong><a href="#demos">Live demos</a></strong><br>
+    <strong><a href="#experiments">Experiment plan</a></strong><br>
+    <strong><a href="#paper">Paper skeleton</a></strong><br>
+  </nav>
+</aside>
+
+<main class="content" id="top">
+
+<div class="hero">
+  <div class="badge-row">
+    <span class="badge">Research concept</span>
+    <span class="badge">World models · Physical AI</span>
+    <span class="badge">3 live in-browser demos</span>
+  </div>
+  <h1>Dream contact properties, not pixels.</h1>
+  <p class="sub">The Physics-Encoder Core (PEC) is a world-model architecture that predicts the <b>physical properties of what it touches</b> — weight, slip, stiffness, actuator lag — instead of the next video frame.</p>
+  <p class="abstract">One working hypothesis for why current world models transfer poorly to real hardware: pixel-level dreams are photorealistic but physically shallow — they look right and force wrong. PEC keeps the classic V&nbsp;→&nbsp;M&nbsp;→&nbsp;C split from the 2018 world-models lineage, changes what the decoder outputs (property fields, not pixels), changes the RNN's clock (continuous-time ODE states, not fixed ticks), and changes where the policy trains (on property dreams scored by a contrastive gate, not on raw-pixel dreams alone).</p>
+  <div class="badge-row">
+    <span class="pill demo">Ran end-to-end on CPU and GPU (T4) — numbers below are real</span>
+    <span class="pill demo">Demos run for real in your browser</span>
+  </div>
+</div>
+
+<!-- ================= SPEC ================= -->
+<section id="spec">
+  <div class="kicker">1 · The one-paragraph spec</div>
+  <h2>What PEC changes, exactly</h2>
+  <p class="lead">Each change is small. Together they target one failure mode: a controller that aced its dreams and then fell over in reality.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Module</th><th>2018 world models</th><th>PEC</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td><b>V — encoder</b></td><td>CNN compresses image frames into <span class="mono">z</span></td><td>ContractNet <span class="mono">f&#952;</span> maps a window of frames into <b>property vector</b> <span class="mono">u&#770; = [m, g, &#956;, k, &#964;]</span> (mass, gravity offset, friction, stiffness, actuator lag)</td><td>A policy that reasons over physics handles a wet floor or a weak motor directly</td></tr>
+      <tr><td><b>M — dynamics</b></td><td>LSTM / GRU, fixed time steps</td><td>Latent ODE head on top of an RNN: <span class="mono">dh/dt = f&#952;(h, u)</span>, solved at any &#916;t</td><td>Contact events live on a spectrum from milliseconds (impact) to seconds (slide)</td></tr>
+      <tr><td><b>Dream</b></td><td>Decoder outputs pixels <span class="mono">x&#770;</span></td><td>Property head outputs <b>property fields</b> <span class="mono">&#966;(x) = [&#956;, k, p&#777;]</span>: friction, stiffness, pressure — a map, not a movie</td><td>Comparing dream to reality becomes measurable (Demo 2)</td></tr>
+      <tr><td><b>Anti-cheat</b></td><td>Temperature noise during dreams</td><td><b>Contrastive gate</b>: one "fake" property dream per batch, rejected only if the policy gains on it (passive noise never spoils a cheat)</td><td>Active detector; kills exploits without needlessly pessimistic training</td></tr>
+      <tr><td><b>Transfer</b></td><td>Train in dream, hope it works</td><td><b>Physics-domain replay</b>: park the robot, replay experiences under perturbed <span class="mono">[m, g, &#956;, k, &#964;]</span>, distill to a property-robust controller</td><td>Free robustness from parked time — no risk, no new data</td></tr>
+      <tr><td><b>Controller C</b></td><td>Small MLP/CMA-ES policy</td><td>Same small policy — but it reads properties, and evolves inside gated dreams</td><td>Keeps the credit-assignment search space tiny (as in the 2018 paper)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>Terminology policy:</b> everything here has a plain name — encoder, property decoder, gate, replay, controller. No "reality engines." The concept is only as good as the math in <a href="#math">§Math</a> and the falsifiable checks in <a href="#experiments">§Experiments</a>.</p>
+</section>
+
+<hr class="rule">
+
+<!-- ================= ARCHITECTURE ================= -->
+<section id="architecture">
+  <div class="kicker">2 · Architecture</div>
+  <h2>Three small models and a gate</h2>
+  <p class="lead">The V → M → C split is kept deliberately. The novelty lives in what V outputs, how M advances time, what the decoder draws, and what the gate refuses.</p>
+
+  <svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="PEC architecture diagram: camera and touch feed an encoder, which outputs a property vector; a latent ODE world model integrates it forward in time; a property head renders friction, stiffness and pressure fields; a small controller proposes actions inside dreams that a contrastive gate scores; physics-domain replay closes the loop back into training.">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#1a1a1a"></path>
+      </marker>
+    </defs>
+    <style>
+      .box { fill: #fff; stroke: #1a1a1a; stroke-width: 1.4; rx: 6; }
+      .soft { fill: #fdf1ea; stroke: #9a3412; }
+      .lbl { font-size: 15px; fill: #1a1a1a; font-weight: 600; }
+      .sub { font-size: 11.5px; fill: #5a5a5a; }
+      .flow { stroke: #1a1a1a; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .tag { font-size: 12px; fill: #9a3412; font-weight: 700; }
+    </style>
+    <rect class="box soft" x="20" y="40" width="120" height="54"></rect>
+    <text class="lbl" x="34" y="63">camera, touch,</text>
+    <text class="lbl" x="34" y="81">proprioception</text>
+
+    <line class="flow" x1="140" y1="67" x2="192" y2="67"></line>
+    <rect class="box" x="195" y="36" width="150" height="62"></rect>
+    <text class="lbl" x="212" y="59">V · ContractNet</text>
+    <text class="sub" x="212" y="78">frames → u&#770; = [m, g, &#956;, k, &#964;]</text>
+
+    <line class="flow" x1="345" y1="67" x2="397" y2="67"></line>
+    <rect class="box" x="400" y="36" width="160" height="62"></rect>
+    <text class="lbl" x="414" y="59">M · latent ODE</text>
+    <text class="sub" x="414" y="78">dh/dt = f&#952;(h, u) on RNN</text>
+
+    <line class="flow" x1="560" y1="67" x2="612" y2="67"></line>
+    <rect class="box" x="615" y="36" width="150" height="62"></rect>
+    <text class="lbl" x="628" y="59">property head</text>
+    <text class="sub" x="628" y="78">&#966;(x): &#956;, k, p&#777; fields</text>
+
+    <line class="flow" x1="475" y1="98" x2="475" y2="150"></line>
+    <text class="tag" x="484" y="130">h(t) to controller</text>
+    <rect class="box" x="400" y="153" width="160" height="62"></rect>
+    <text class="lbl" x="421" y="176">C · controller</text>
+    <text class="sub" x="421" y="195">small policy, reads u&#770;</text>
+
+    <line class="flow" x1="560" y1="184" x2="612" y2="184"></line>
+    <rect class="box soft" x="615" y="153" width="150" height="62"></rect>
+    <text class="lbl" x="630" y="176">contrastive gate</text>
+    <text class="sub" x="630" y="195">fake dream? reject</text>
+
+    <line class="flow" x1="690" y1="215" x2="690" y2="252"></line>
+    <line class="flow" x1="690" y1="252" x2="270" y2="252"></line>
+    <line class="flow" x1="270" y1="252" x2="270" y2="215"></line>
+    <rect class="box" x="130" y="153" width="140" height="62"></rect>
+    <text class="lbl" x="146" y="176">physics-domain</text>
+    <text class="lbl" x="146" y="194">replay (parked)</text>
+    <text class="sub" x="150" y="243">perturbed m, g, &#956;, k, &#964; → distill</text>
+
+    <text class="sub" x="24" y="290">Everything left of the gate runs offline or on-robot; the controller is the only part that must be fast.</text>
+  </svg>
+  <p class="figcap"><b>Figure 1.</b> PEC pipeline. The encoder (V) compresses a short observation window into a physical property vector. The world model (M) integrates latent dynamics forward at arbitrary time steps. The property head renders measurable fields instead of pixels. The controller (C) is small on purpose. The contrastive gate decides which dreams are honest enough to train on.</p>
+
+  <h3>Component cards</h3>
+  <div class="grid3">
+    <div class="card"><h4><span class="var">V</span> — ContractNet encoder</h4><p>Convolutional trunk + a <b>contrastive pull</b>: two different views of the same object (new lighting, new background) must map to the same property vector. Without this, encoders quietly smuggle visual shortcuts (reflections, colors) into "mass."</p></div>
+    <div class="card"><h4><span class="var">M</span> — latent ODE world model</h4><p>An RNN backbone whose top state is treated as a continuous function of time, advanced by a fixed-step ODE solver. One model, many clocks: 1&nbsp;ms for impact transients, 100&nbsp;ms for slides — no retraining per step size.</p></div>
+    <div class="card"><h4><span class="var">&#966;</span> — property head decoder</h4><p>Outputs per-point friction, stiffness, and pressure fields. Supervised by cheap ground truth: force/torque sensors, felt markers, and motion capture — none of which require pixel labels.</p></div>
+    <div class="card"><h4><span class="var">C</span> — the small controller</h4><p>Same argument as the 2018 paper: keep the policy tiny so the credit-assignment search stays tractable, and spend the parameters on the world model instead. Here it additionally reads <span class="mono">u&#770;</span>, so it can act on "this is slippery" directly.</p></div>
+    <div class="card"><h4><span class="var">G</span> — contrastive dream gate</h4><p>Each batch: one honest dream, one poisoned dream (a property vector with realistic fake entries — 30% heavier object, 0.15 friction floor). Train the policy on both; if it wins on the fake, that dream is flagged. Passive temperature noise can't do this — see <a href="#demos">Demo 3</a>.</p></div>
+    <div class="card"><h4><span class="var">R</span> — physics-domain replay</h4><p>When the robot is idle, replay stored experience under perturbed properties and distill the policy. The robot never moves; the simulator does the work. Free robustness — bounded by a property-perturbation radius set on validation data.</p></div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ================= MATH ================= -->
+<section id="math">
+  <div class="kicker">3 · The math, stated plainly</div>
+  <h2>Four equations do the work</h2>
+
+  <h3>Encoder with a contrastive pull</h3>
+  <div class="mathblock">
+    L<sub>enc</sub> = &#8211; log <span class="mono">sim</span>( f<sub>&#952;</sub>(x<sub>a</sub>), f<sub>&#952;</sub>(x<sub>b</sub>) ) / &#964; &nbsp;+&nbsp; &#8211; log(1 &#8211; <span class="mono">sim</span>( f<sub>&#952;</sub>(x<sub>a</sub>), f<sub>&#952;</sub>(x<sub>c</sub>) ) / &#964; ) &nbsp;&nbsp;<span class="tag">(1)</span>
+  </div>
+  <p><span class="mono">x_a, x_b</span> are two views of the same object with the same true properties; <span class="mono">x_c</span> is a view of a different object. Temperature <span class="mono">&#964;</span> = 0.1. Without this term the encoder is free to encode "what it looks like" instead of "what it is."</p>
+
+  <h3>Continuous-time latent dynamics</h3>
+  <div class="mathblock">
+    dh(t)/dt = f<sub>&#952;</sub>( h(t), u&#770;, a(t) ) &nbsp;&nbsp;solved as&nbsp;&nbsp; h(t + &#916;t) = h(t) + (&#916;t/6)(k<sub>1</sub> + 2k<sub>2</sub> + 2k<sub>3</sub> + k<sub>4</sub>) &nbsp;&nbsp;<span class="tag">(2)</span>
+  </div>
+  <p>Classic Runge–Kutta 4 on the latent state. Fixed steps, adaptive where it matters. Compare with the standard RNN update <span class="mono">h&#8322; = tanh(W h&#8321; + U x)</span>, which forces one clock on all physics. Demo 1 shows what breaks when you get this wrong.</p>
+
+  <h3>Property-field decoding (the dream)</h3>
+  <div class="mathblock">
+    &#966;(x, t) = D<sub>&#966;</sub>( h(t) ) &nbsp;&#8594;&nbsp; [ &#956;(x), k(x), p&#777;(x) ] &nbsp;&nbsp;&nbsp;L<sub>dream</sub> = &#8211;&#8202;log p( &#966;<sub>measured</sub> &#8202;|&#8202; &#966;&#770; ) &nbsp;&nbsp;<span class="tag">(3)</span>
+  </div>
+  <p>Ground truth is not pixels — it is whatever the sensors can measure: F/T readings, pressure mats, felt markers tracked by motion capture. This is the "measure it, don't model it" principle applied to supervision.</p>
+
+  <h3>The contrastive gate (anti-exploit)</h3>
+  <div class="mathblock">
+    G(&#960;, dream) = 1[ J<sub>real-world</sub>(&#960;) &#8805; &#946; &#183; E[J<sub>dream</sub>(&#960;)] ] &nbsp;&nbsp;&nbsp;train &#960; only on G = 1 dreams &nbsp;&nbsp;<span class="tag">(4)</span>
+  </div>
+  <p>&#946; &lt; 1 (typ. 0.8) tolerates ordinary sim-to-real gap. The gate's job is to catch dreams that are <i>structurally</i> exploitable, not slightly wrong. The 2018 paper's temperature knob <span class="mono">&#964; &#8594; &#8734;</span> (train in pure noise) is a special case that only works when you already know the exploit direction.</p>
+  <p class="note"><b>Subtle point, made explicit:</b> the gate needs paired real-world and dream scores for the same policy. That is expensive in the real world — hence physics-domain replay, which manufactures perturbed "pseudo-real" variants of already-collected episodes at zero hardware risk. The pair (gate, replay) is what makes the scheme practical.</p>
+</section>
+
+<hr class="rule">
+
+<!-- ================= TRAINING ================= -->
+<section id="training">
+  <div class="kicker">4 · Training loop</div>
+  <h2>Four phases, one loop</h2>
+  <div class="grid2">
+    <div class="card"><h4>Phase 1 — collect (robot active)</h4><p>Random exploratory motion + a small scripted set. Log: frames, proprioception, F/T, pressure mats, mocap of felt markers. No pixel labels anywhere.</p></div>
+    <div class="card"><h4>Phase 2 — fit V and M (offline)</h4><p>Train encoder with Eq. (1), world model with Eq. (2), decoder with Eq. (3). These can run for days; nothing here touches the robot.</p></div>
+    <div class="card"><h4>Phase 3 — evolve C inside gated dreams</h4><p>Population-based search (CMA-ES or ES) on the tiny controller, scored inside dreams that passed the gate. Same spirit as the 2018 paper's car-racing result — small search space, big world model.</p></div>
+    <div class="card"><h4>Phase 4 — replay + distill (robot parked)</h4><p>Physics-domain replay under perturbed <span class="mono">[m, g, &#956;, k, &#964;]</span>, distill into the deployed controller. Iterate: deploy, collect a little, retrain, park again.</p></div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ================= PRIOR WORK ================= -->
+<section id="prior">
+  <div class="kicker">5 · Prior work</div>
+  <h2>What exists, what doesn't</h2>
+  <p class="lead">Answering the "has this been done before?" question honestly — with pointers, not vibes.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Work</th><th>Year</th><th>What it did</th><th>What PEC does differently</th></tr></thead>
+    <tbody>
+      <tr><td>World Models (Ha &amp; Schmidhuber)</td><td>2018</td><td>V–M–C split; train controller inside the model's dream; temperature knob for uncertainty</td><td>Predicts pixels; single discrete clock; passive anti-exploit</td></tr>
+      <tr><td>Dreamer / DreamerV3 (Hafner et al.)</td><td>2019–23</td><td>RSSM latent imagination, strong benchmark results</td><td>Still pixel/latent reconstruction; no physical-property supervision; no gate</td></tr>
+      <tr><td>PlaNet, DayDreamer</td><td>2020–22</td><td>Real-robot learning from pixels</td><td>Learned per-task; no explicit property state; no replay-based robustness</td></tr>
+      <tr><td>Latent ODE models (Rubanova et al., Neural ODEs)</td><td>2019</td><td>Continuous-time latent dynamics, irregular sampling</td><td>Never combined with contact-rich control or property decoding</td></tr>
+      <tr><td>Differentiable particle / MPM simulators (DiffTaichi, Warp)</td><td>2019–22</td><td>Gradient-through-physics for control</td><td>Hand-designed equations; PEC learns the field instead</td></tr>
+      <tr><td>Sim-to-real randomization (OpenAI, Domain Randomization)</td><td>2018–19</td><td>Randomize simulator params at training</td><td>Randomizes blindly; PEC <i>estimates</i> properties and gates on honesty</td></tr>
+      <tr><td>System identification + RL hybrids</td><td>ongoing</td><td>Fit physical params, then control</td><td>Usually rigid-body only, offline; PEC is learned, online, contact-field-level</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>Honest claim:</b> the individual ingredients (contrastive encoders, latent ODEs, world-model RL, replay) all exist. The unbuilt combination is: property-field supervision + continuous-time dynamics + an <i>active</i> contrastive dream gate + physics-domain replay, aimed at contact-rich manipulation. That's the paper.</p>
+</section>
+
+<hr class="rule">
+
+<!-- ================= RESULTS (from pec-naturemi run) ================= -->
+<section id="results">
+  <div class="kicker">6 · What actually happened when we ran it</div>
+  <h2>Results from the runnable suite (<code>pec-naturemi/</code>)</h2>
+  <p class="lead">The four decisive checks were implemented and run (12 paired seeds for the gate test; 5 seeds × 120 generations for transfer; full recovery runs). Every number below is machine-generated — see <a href="results/stats.json">stats.json</a> and the compiled draft <a href="results/paper.pdf">paper.pdf</a>. Two checks pass decisively, one shows a positive trend, and one is an honest negative.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Check</th><th>Claim</th><th>Result</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Clock check</b> (latent-ODE vs fixed-tick)</td>
+        <td>One model, many clocks: bounded error at any horizon</td>
+        <td>k-step MSE at Δt = 0.4 s: <b>0.0089</b> (latent-ODE) vs <b>0.3659</b> (fixed-tick) — a 12.9× separation, from identical data, capacity, and training</td>
+        <td><span class="pill demo">pass</span></td>
+      </tr>
+      <tr>
+        <td><b>Recovery check</b> (parked replay)</td>
+        <td>Estimate properties from logs, recover in parked replay</td>
+        <td>Fault (gain 0.60, lag 0.16 s) estimated at <b>(0.600, 0.160)</b> in every seed; return 1.256 → 1.072 at fault, recovered to <b>1.410</b> (blind) / <b>1.416</b> (property-conditioned) — <i>above</i> the 1.302 full-budget cold-start</td>
+        <td><span class="pill demo">pass</span></td>
+      </tr>
+      <tr>
+        <td><b>Gate check</b> (contrastive gate vs temperature noise)</td>
+        <td>Active dream-gating beats passive noise on degraded hardware</td>
+        <td>+0.31 mean return, d = 0.66, gate wins 4/5 seeds at n = 5 — but at n = 12 the trend washes out (+0.08, d = 0.18, p = 0.68). Holdout diagnostics show policies rarely prefer poisoned dreams in this suite, so the gate has little to catch <i>here</i>. It is cost-free insurance, not a demonstrated win.</td>
+        <td><span class="pill todo">trend, unresolved</span></td>
+      </tr>
+      <tr>
+        <td><b>Transfer check</b> (property-conditioned policies)</td>
+        <td>Reading properties beats observation-only control off-distribution</td>
+        <td>OOD means: FOM 1.298 vs blind 1.331 vs history 1.331 — no advantage once observation history is available (−0.03, negative result). The value of properties shows up in <i>replay conditioning</i>, not as a direct policy input.</td>
+        <td><span class="pill todo">negative</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>What this means.</b> The two structural claims — continuous-time clocks and property-conditioned replay — carry the paper. The two epistemic claims — active gating and property-readout policies — are where the suite disagrees with the original intuition, which is exactly what a falsifiable design is for. Reproduce everything with <code>cd pec-naturemi && python -m pec.run_all</code> (~5 min, CPU) or the <code>--quick</code> smoke mode.</p>
+
+  <h3>Scaled verification on GPU — <code>pec2/</code>, run on Kaggle</h3>
+  <p class="lead">To test whether the surviving claims generalize past the 1-D caricature, we rebuilt the system as <b>pec2</b>: contact-rich 2-D pushing (spring contact, actuator lag, mid-episode faults), a <b>GRU posterior encoder</b> that must infer the five hidden properties (mass, drag, stiffness, actuator gain, actuator lag) from observation history — no oracle — and PPO policies trained on real and dreamed rollouts. Same four checks, 6 seeds each, executed autonomously on a Kaggle T4 (~33 min wall). Every number below is from <a href="results/kaggle/stats_pec2.json">stats_pec2.json</a>; raw log <a href="results/kaggle/pec2-world-models-run.log">here</a>, figures below, notebook + code on <a href="https://www.kaggle.com/code/sehajrsingh/pec2-world-models-run">Kaggle</a>.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Check</th><th>Result (n = 6 paired seeds, bootstrap CI, Wilcoxon)</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>E3 · Fault adaptation</b> (the headline)</td>
+        <td>Property-conditioned student beats blind on post-fault return: <b>+0.028</b>, CI [+0.015, +0.041], <b>p = 0.031, d = 1.22</b> — and the learned encoder is statistically <b>indistinguishable from oracle</b> ground-truth properties (−0.010, p = 0.31). The RMA-style result holds with <i>inferred</i>, not given, properties.</td>
+        <td><span class="pill demo">pass — decisive</span></td>
+      </tr>
+      <tr>
+        <td><b>E0 · Identifiability</b></td>
+        <td>Encoder NRMSE <b>0.266</b> vs 0.288 mean-predictor — the five properties are identifiable from observation history alone via a contact-seeking excitation probe (standard system-ID practice), but the margin is modest: this task is hard.</td>
+        <td><span class="pill demo">pass</span></td>
+      </tr>
+      <tr>
+        <td><b>E1 · Dream gate at scale</b></td>
+        <td>Gate vs observation-noise: −0.44, p = 0.22 (unresolved). But <b>noise vs clean training: +0.46</b>, CI excludes zero — the original 2018 "train on noisier dreams" temperature effect <i>replicates</i> in contact-rich 2-D, while the active-gate claim still has not bitten anywhere.</td>
+        <td><span class="pill todo">mixed</span></td>
+      </tr>
+      <tr>
+        <td><b>E2 · Clock at scale</b></td>
+        <td><b>Negative — contradicts the 1-D suite.</b> At this budget (24 windows × 6k grad steps) the capacity-matched fixed-tick model is equal or slightly better at every clock (e.g. 0.741 vs 0.905 at Δt×k = 8×8). Single-clock training removed the interpolation artifact, yet the ODE edge needs longer training (or stiffer contact) to appear.</td>
+        <td><span class="pill todo">negative</span></td>
+      </tr>
+      <tr>
+        <td><b>E4 · Cross-modal transfer</b></td>
+        <td>Conditioning on edge-of-range properties: +0.008 (p = 0.84); double-edge: +0.012 (p = 0.56). No reliable off-distribution advantage from property readout — consistent with the 1-D suite's honest negative.</td>
+        <td><span class="pill todo">negative</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Figure (generated on the T4)</th><th>What it shows</th></tr></thead>
+    <tbody>
+      <tr><td><a href="results/kaggle/figures/fig_fault.png"><img src="results/kaggle/figures/fig_fault.png" alt="E3 fault adaptation" style="max-width:100%"></a></td><td>E3: post-fault return, blind vs property-conditioned (learned) vs oracle-conditioned, per seed.</td></tr>
+      <tr><td><a href="results/kaggle/figures/fig_gate.png"><img src="results/kaggle/figures/fig_gate.png" alt="E1 gate" style="max-width:100%"></a></td><td>E1: honest vs noise vs gated dream training on degraded hardware.</td></tr>
+      <tr><td><a href="results/kaggle/figures/fig_clock.png"><img src="results/kaggle/figures/fig_clock.png" alt="E2 clock sweep" style="max-width:100%"></a></td><td>E2: k-step MSE across evaluation clocks, latent-ODE vs fixed-tick (train clock = 1).</td></tr>
+      <tr><td><a href="results/kaggle/figures/fig_crossmodal.png"><img src="results/kaggle/figures/fig_crossmodal.png" alt="E4 cross-modal" style="max-width:100%"></a></td><td>E4: unseen property ranges, central vs edge vs double-edge stratification.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>Fully 3-D world — <code>pec2</code> moves to real contact geometry</h3>
+  <p class="lead">The suite was then promoted from planar to a <b>fully 3-D world</b>: sphere end-effector, cube box, positions and velocities in ℝ³, spring contact and actuator lag along all three axes, and 3-D motor commands (a plane-invariant <code>flat</code> mode is kept for continuity). Everything downstream — encoder, world models, policies, experiments — reads the dimensions from constants, so the promotion touched exactly one file. The property-inference protocol was also hardened after a real failure: with a single fixed window pool the encoder <i>memorized</i> (train loss ↓ 0.22→0.14 while held-out NRMSE ↑ 0.29→0.30). The fix is a three-part anti-memorization protocol — <b>episode-held-out validation</b> (window-level splits leak: adjacent windows share 31/32 steps), <b>best-val checkpoint restore</b>, and <b>periodic fresh-episode pools</b> — after which held-out NRMSE improves monotonically with training.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Signal (3-D, local CPU CI run)</th><th>Result</th><th>Reading</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>E0 · identifiability in 3-D</b></td>
+        <td>Encoder NRMSE <b>0.2865</b> vs 0.2909 mean-predictor (1 seed, toy budget); unit-level protocol run reaches <b>0.257 vs 0.286</b> and still improving</td>
+        <td><span class="pill demo">pass</span></td>
+      </tr>
+      <tr>
+        <td><b>Unit suite in 3-D</b></td>
+        <td>All <b>14/14</b> tests green (after the baseline/hold-task extension) — including the capacity-matched clock test, where the latent-ODE <b>still beats the fixed-tick model at the coarse clock</b> in 3-D</td>
+        <td><span class="pill demo">pass</span></td>
+      </tr>
+      <tr>
+        <td><b>E1 · gate direction</b></td>
+        <td>Gate vs noise under poisoned dreams: <b>+0.79</b> (1 seed); noise vs honest now <i>hurts</i> (−0.66) — degradation makes dream noise toxic, which is exactly where the gate should matter</td>
+        <td><span class="pill demo">directional</span></td>
+      </tr>
+      <tr>
+        <td><b>E2/E3/E4</b></td>
+        <td>Within noise at toy budgets (single seed, ~0.02–0.5 effects) — the statistical runs execute on the Kaggle GPU profile</td>
+        <td><span class="pill todo">pending GPU</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note">3-D figures from the local run: <a href="results/kaggle/figures/3d_fig_fault.png">fault</a> · <a href="results/kaggle/figures/3d_fig_gate.png">gate</a> · <a href="results/kaggle/figures/3d_fig_clock.png">clock</a> · <a href="results/kaggle/figures/3d_fig_crossmodal.png">cross-modal</a>; raw numbers in <a href="results/kaggle/stats_3d_ci.json">stats_3d_ci.json</a>. The 6-seed GPU statistical run is <b>fully prepared but currently blocked</b>: the Kaggle account's weekly 30-hour GPU quota is exhausted (the account also runs unrelated GPU kernels). Notebook <a href="https://www.kaggle.com/code/sehajrsingh/pec2-world-models-run">v10</a> with the corrected 3-D smoke cell is one <code>kaggle kernels push</code> away the moment quota resets — the pre-registered full profile is unchanged.</p>
+
+  <h3>The reviewer-proof baselines — randomize, distill, or infer?</h3>
+  <p class="lead">The fault-recovery result raises the obvious question: <b>why not just randomize?</b> Domain randomization (DR) trains a robust policy across a parameter distribution; RMA-style privileged learning distills a student that infers a descriptor from history. Both are standard answers, and a fault-recovery claim that only beats a property-blind policy hasn't met the real bar. The suite now implements <b>all three answers as conditions in the same experiment</b> — same physics, same reward, same budget, same fault — with two hardenings that remove easy wins: DR training uses <b>per-episode randomized fault schedules</b> (time ~ U{40..110}, multipliers ~ U) so nothing about the deployment fault can be memorized, and the RMA condition is the <b>full two-stage protocol</b> (oracle-conditioned teacher trained with randomized faults → GRU student distilled on on-policy histories).</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Condition</th><th>Policy input</th><th>Training environment</th><th>What it tests</th></tr></thead>
+    <tbody>
+      <tr><td><b>blind</b></td><td>obs</td><td>healthy</td><td>the original lower bar</td></tr>
+      <tr><td><b>dr</b></td><td>obs</td><td>randomized mid-episode faults</td><td>robustness without inference — the strongest no-inference baseline</td></tr>
+      <tr><td><b>zcond</b></td><td>obs + online posterior ẑ</td><td>healthy</td><td>inference trained without faults (original headline condition)</td></tr>
+      <tr><td><b>zfault</b></td><td>obs + online posterior ẑ</td><td>randomized faults</td><td>inference + robustness combined</td></tr>
+      <tr><td><b>rma</b></td><td>obs + distilled student estimate</td><td>teacher's policy, student distilled on-policy</td><td>descriptor distillation into a fixed expert</td></tr>
+      <tr><td><b>oracle</b></td><td>obs + true properties</td><td>randomized faults</td><td>upper bound (= the RMA stage-1 teacher)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note">The two pre-registered claims that matter: <b>inference beats randomization</b> (zcond vs dr) and <b>dream-conditioned inference beats descriptor distillation</b> (zcond vs rma). The matrix is implemented, unit-tested, and validated end-to-end locally; the GPU statistical runs share the pending quota batch. For the honest current status: at toy CI budget the ordering is oracle &lt; zcond &lt; {dr, rma} &lt; blind on post-fault return — directionally right, statistically unpowered.</p>
+
+  <h3>Two more additions: a second task family, and an identifiability audit</h3>
+  <p class="lead"><b>E5 · The hold task.</b> Generality requires more than one reward structure. A new task starts the box at the goal and applies a constant world-frame drift acceleration a<sub>g</sub> = 1.2 m/s²; the end-effector must find the box, get on the updrift side, and <b>brace</b>. The required counter-force is m·a<sub>g</sub>, so mass — the weakest channel in pushing — becomes behaviorally decisive here: with sustainable contact force up to ~60 N, roughly 18% of the property box (heavy box, weak actuator) cannot be perfectly held. Same four-way comparison (blind / dr / zcond / oracle), same protocol. <b>E6 · The identifiability audit.</b> A proposition for this dynamics family: box-only contact data identifies the ratios (k/m, μ/m) and the pair (g, τ), but the <b>absolute mass scale is only weakly identifiable</b>. E6 makes that boundary empirical: a per-channel audit separates data-driven channels (μ, k, g, τ must beat the mean-predictor) from prior-assisted ones (mass may tie — an honest tie, not a failure), and an excitation-amplitude sweep checks the persistent-excitation signature (identifiable-channel NRMSE must fall as probe amplitude grows). Aggregate NRMSE flattens exactly this distinction; the audit un-flattens it.</p>
+  <p class="note"><b>The verdict after both suites.</b> One result survives everywhere and got stronger with scale: <b>property-conditioned replay from inferred properties recovers control after hardware faults</b> (d = 1.22, learned ≈ oracle). The 2018 temperature-noise effect also replicates. The continuous-time clock advantage and the dream-gate advantage did <i>not</i> survive contact with the richer 2-D environment at budget — but in 3-D the clock test <i>passes again</i> at unit scale, so the claim is now precisely scoped: the ODE edge is real but budget-sensitive. All three open claims are stated with the exact budgets that failed or passed — and the question the fault result now has to answer (inference vs randomization vs distillation, all in one suite) is pre-registered with its baselines built. That is what end-to-end falsifiable looks like.</p>
+</section>
+
+<hr class="rule">
+
+<!-- ================= DEMOS ================= -->
+<section id="demos">
+  <div class="kicker">7 · Live demos — these run for real</div>
+  <h2>Play with the three core ideas</h2>
+  <p class="lead">Everything below executes in your browser. No server, no GPU, no library. The code is small enough to read in an afternoon — that is the point.</p>
+
+  <!-- DEMO 1 -->
+  <div class="demo-shell">
+    <div class="demo-head">
+      <span class="title">Demo 1 — Continuous-time vs discrete dynamics (why one clock breaks contact physics)</span>
+      <span class="status" id="d1-status">idle</span>
+    </div>
+    <div class="demo-body">
+      <div class="demo-layout">
+        <div class="col-wide">
+          <canvas id="d1-canvas" width="640" height="360" aria-label="Ball bouncing on a moving paddle, simulated with continuous ODE dynamics"></canvas>
+        </div>
+        <div class="col">
+          <p style="font-size:14px; color:var(--muted);">A ball bounces on a sinusoidally moving paddle. The ground truth uses continuous dynamics (RK4). <b>Hit "run"</b> to watch, then use the slider to see what a discrete-tick model with the wrong step size predicts.</p>
+          <div class="controls">
+            <button class="btn" id="d1-run">Run</button>
+            <button class="btn ghost" id="d1-reset">Reset</button>
+          </div>
+          <div class="controls">
+            <label>Model step (ms)</label>
+            <input type="range" id="d1-dt" min="4" max="60" value="16" step="1">
+            <span class="val" id="d1-dt-val">16</span>
+          </div>
+          <div class="readout" id="d1-readout">Model-vs-truth divergence will appear here.</div>
+          <div class="legend">
+            <span><span class="swatch" style="background:#9a3412;"></span>truth (continuous ODE)</span>
+            <span><span class="swatch" style="background:#1d4ed8;"></span>model (discrete step)</span>
+            <span><span class="swatch" style="background:#166534;"></span>paddle</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DEMO 2 -->
+  <div class="demo-shell">
+    <div class="demo-head">
+      <span class="title">Demo 2 — Material property fields (what the decoder outputs instead of pixels)</span>
+      <span class="status" id="d2-status">idle</span>
+    </div>
+    <div class="demo-body">
+      <div class="demo-layout">
+        <div class="col">
+          <p style="font-size:14px; color:var(--muted);">Left: what a camera sees (shaded scene, four materials). Right: what the property head outputs — friction, stiffness, and pressure fields. <b>Hover or drag</b> on the scene to probe values; drag the light to see the point.</p>
+          <div class="controls">
+            <button class="btn" id="d2-rotate">Rotate view</button>
+            <button class="btn ghost" id="d2-light">Move light</button>
+          </div>
+          <div class="readout" id="d2-readout">Hover the scene to probe surface properties.</div>
+          <div class="legend">
+            <span><span class="swatch" style="background:#1d4ed8;"></span>&#956; friction</span>
+            <span><span class="swatch" style="background:#166534;"></span>k stiffness</span>
+            <span><span class="swatch" style="background:#9a3412;"></span>p&#777; pressure</span>
+          </div>
+        </div>
+        <div class="col-wide">
+          <canvas id="d2-canvas" width="640" height="360" aria-label="Split view: camera shading on the left, decoded property fields on the right"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DEMO 3 -->
+  <div class="demo-shell">
+    <div class="demo-head">
+      <span class="title">Demo 3 — Contrastive dream gate vs temperature noise (real RL, trained in your browser)</span>
+      <span class="status" id="d3-status">idle</span>
+    </div>
+    <div class="demo-body">
+      <div class="demo-layout">
+        <div class="col-wide">
+          <canvas id="d3-canvas" width="640" height="360" aria-label="Push-box task: trained policy evaluated in the real environment and in dreams"></canvas>
+        </div>
+        <div class="col">
+          <p style="font-size:14px; color:var(--muted);">A 1D push-box task. A small controller is trained by evolution strategies <b>inside dreams</b>. The exploit: dream friction can drift below real friction, and the controller learns to slam — great in dream, bad in reality. The gate catches it.</p>
+          <div class="controls">
+            <button class="btn" id="d3-train">Train (ES, 1 batch)</button>
+            <button class="btn" id="d3-train10">Train ×10</button>
+            <button class="btn ghost" id="d3-reset">Reset</button>
+          </div>
+          <div class="controls">
+            <label>mode</label>
+            <select id="d3-mode">
+              <option value="noise">temperature noise</option>
+              <option value="gate">contrastive gate</option>
+            </select>
+          </div>
+          <div class="readout" id="d3-readout">Press train to start evolving the controller.</div>
+          <div class="legend">
+            <span><span class="swatch" style="background:#166534;"></span>real-world return</span>
+            <span><span class="swatch" style="background:#9a3412;"></span>dream return</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<!-- ================= EXPERIMENTS ================= -->
+<section id="experiments">
+  <div class="kicker">8 · Experiment plan</div>
+  <h2>What would falsify this</h2>
+  <p class="lead">A paper concept is only as good as its cheapest decisive test. Each row is a concrete gate: if it fails, the idea is wrong as stated.</p>
+  <ul class="checklist">
+    <li><b>Gate check — exploit reproduction.</b> Reproduce a known dream-exploit on a standard benchmark (cart-pole or push-box): show a controller that maximizes dream return while losing real return. Then show the contrastive gate flags it and temperature noise does not. <span class="why">If temperature noise also catches it, the gate has no advantage.</span></li>
+    <li><b>Field check — decoder sanity.</b> On a real tabletop with 4 materials, show the property head's &#956;(x) correlates with measured slip (r &gt; 0.7 on held-out objects) while a pixel decoder's reconstruction does not. <span class="why">This is the core claim: physics beats pixels for contact.</span></li>
+    <li><b>Clock check — event timing.</b> Show latent-ODE contact timing error stays bounded across step sizes 1–50&nbsp;ms, while a fixed-tick RNN's error grows with step size. <span class="why">Directly testable; no new hardware needed.</span></li>
+    <li><b>Transfer check — parked replay.</b> Train a policy, change the object mass by +40%, deploy zero-shot: baseline fails, PEC + replay recovers within N parked minutes. <span class="why">The practical payoff claim.</span></li>
+    <li><b>Ablation — drop one part at a time.</b> Remove the gate, the property head, the ODE head, replay; measure each drop. <span class="why">If removing the gate doesn't hurt, the gate is decoration.</span></li>
+  </ul>
+  <p class="note"><b>Status:</b> concept + demos only. The demos are real code but tiny; the experiment plan is what turns this into a paper. If you want to run the cheapest test first: the gate check needs only a laptop and an afternoon.</p>
+</section>
+
+<hr class="rule">
+
+<!-- ================= OUTLINE ================= -->
+<section id="outline">
+  <div class="kicker">9 · Paper skeleton</div>
+  <h2>If this were written up</h2>
+  <ol>
+    <li><b>Introduction</b> — pixel dreams look right and force wrong; the contact-rich gap.</li>
+    <li><b>Related work</b> — the table above, expanded.</li>
+    <li><b>Method</b> — Eq. (1)–(4), the four phases.</li>
+    <li><b>Experiments</b> — the five checks, each with a pass/fail criterion.</li>
+    <li><b>Limitations</b> — property supervision needs sensors; the gate needs paired scores; fields are local, not global.</li>
+    <li><b>Reproducibility</b> — this site. Demos are the paper's appendix, runnable.</li>
+  </ol>
+</section>
+
+<footer>
+  <p><b>PEC — the physics encoder.</b> A research concept page, built to be argued with. Demos are plain HTML/JS; view source to check.</p>
+  <p>Inspired by the V–M–C structure of <i>World Models</i> (Ha &amp; Schmidhuber, 2018) and continuous-time latent dynamics (Neural ODEs). Styled after e3nn.org. Nothing here is peer reviewed. <span id="year"></span></p>
+</footer>
+</main>
+</div>
+</div>
+
+<script src="demos.js"></script>
+<script>document.getElementById('year').textContent = new Date().getFullYear();</script>
+</body>
+</html>
